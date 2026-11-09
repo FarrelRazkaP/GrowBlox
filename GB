@@ -2141,6 +2141,16 @@ end
 function Anim.consider(v, trusted)
     local tv = type(v)
     if tv == "table" then
+        if not Net or not NetOk then
+            local ok, isN = pcall(function()
+                return type(rawget(v, "call")) == "function" and type(rawget(v, "on")) == "function"
+                    and type(rawget(v, "punch")) == "table"
+            end)
+            if ok and isN then
+                Net, NetOk = v, true
+                pcall(function() if installActHook then installActHook() end end)
+            end
+        end
         if not Refs.World then
             local ok, isWorld = pcall(function()
                 return type(rawget(v, "fg")) == "table" and type(rawget(v, "bg")) == "table"
@@ -2222,6 +2232,14 @@ local function findRefs()
             and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
         if Refs.ScanCount % 2000 == 0 then task.wait() end
     end
+    if not Refs.Punch then
+        Refs.Punch = function(tx, ty, mute, extra)
+            if sendPunchPacket then sendPunchPacket(tx, ty) end
+            if sendHitFx then sendHitFx(tx, ty) end
+            if State.Visual and Anim.swing then Anim.swing(tx, ty, "punch") end
+        end
+    end
+    pcall(function() if installActHook then installActHook() end end)
     return Refs.World ~= nil
 end
 
@@ -2500,18 +2518,30 @@ local function sendSetTile(layer, x, y, id)
     return true
 end
 
+local function sendPunchPacket(tx, ty)
+    if NetOk and type(Net) == "table" and Net.punch and type(Net.punch.send) == "function" then
+        local p1 = (ty - 1) * 100 + tx
+        local p2 = (ty - 1) * 100 + (tx - 1)
+        local p3 = ty * 100 + tx
+        if p1 >= 0 and p1 <= 65535 then pcall(Net.punch.send, p1) end
+        if p2 >= 0 and p2 <= 65535 and p2 ~= p1 then pcall(Net.punch.send, p2) end
+        if p3 >= 0 and p3 <= 65535 and p3 ~= p1 and p3 ~= p2 then pcall(Net.punch.send, p3) end
+    end
+end
+
 local function sendHitFx(x, y)
-    if NetOk and type(Net) == "table" and Net.act then
-        pcall(Net.act.send, { x = x + 0.5, y = y + 0.5 })
+    if NetOk and type(Net) == "table" and Net.act and type(Net.act.send) == "function" then
+        pcall(Net.act.send, { kind = 6, x = x + 0.5, y = y + 0.5 })
     end
 end
 
 ---------------------------------------------------------------------
--- AUTO BREAK / FAST BREAK GEMBUL (Rapid Auto-Burst - Tanpa Rollback)
+-- AUTO BREAK / FAST BREAK GEMBUL (Server-Authoritative Rapid Burst)
 ---------------------------------------------------------------------
 local activePunching = {}
 local fastBreakSync = false
 local lastPunchTime = 0
+local actHookInstalled = false
 
 local function burstTile(tx, ty)
     if not State.FastBreak then return end
@@ -2530,12 +2560,13 @@ local function burstTile(tx, ty)
     task.spawn(function()
         local need = hitsNeeded(id)
         for i = 2, need do
-            task.wait(0.18)
+            task.wait(0.08)
             if not alive() or not State.FastBreak or tileAt(layer, tx, ty) ~= id then break end
+            sendPunchPacket(tx, ty)
+            sendHitFx(tx, ty)
             if Refs.Punch then
                 pcall(Refs.Punch, tx, ty, State.MutePunch or nil, nil)
             end
-            sendHitFx(tx, ty)
             if State.Visual and Anim.swing then Anim.swing(tx, ty, "punch") end
             if tileAt(layer, tx, ty) ~= id then break end
         end
@@ -2543,13 +2574,32 @@ local function burstTile(tx, ty)
     end)
 end
 
+function installActHook()
+    if actHookInstalled then return end
+    if NetOk and type(Net) == "table" and Net.act and type(Net.act.send) == "function" then
+        local origActSend = Net.act.send
+        Net.act.send = function(data)
+            if type(data) == "table" and data.kind == 6 and State.FastBreak and type(data.x) == "number" and type(data.y) == "number" then
+                local tx = math.floor(data.x)
+                local ty = math.floor(data.y)
+                task.spawn(function()
+                    burstTile(tx, ty)
+                end)
+            end
+            return origActSend(data)
+        end
+        actHookInstalled = true
+    end
+end
+
 local function setFastBreak(on)
     if fastBreakSync then return end
     fastBreakSync = true
     State.FastBreak = (on == true)
     if State.FastBreak then
-        State.BreakMs = 190
-        State.AfterBreakMs = 50
+        State.BreakMs = 140
+        State.AfterBreakMs = 30
+        pcall(installActHook)
     else
         State.BreakMs = 220
         State.AfterBreakMs = 250
@@ -2563,7 +2613,6 @@ local function setFastBreak(on)
     fastBreakSync = false
 end
 
--- Deteksi aksi pukul game secara langsung dari upvalue tangan (100% aman tanpa merusak game)
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if not State.FastBreak or not Anim.fn or not Anim.idx or not Anim.get then return end
     local ok, act = pcall(Anim.get, Anim.fn, Anim.idx)
@@ -2576,7 +2625,6 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
     end
 end))
 
--- Mouse listener di PC
 pcall(function()
     local mouse = LocalPlayer:GetMouse()
     if mouse then
@@ -2593,7 +2641,6 @@ pcall(function()
     end
 end)
 
--- Touch listener di Mobile
 pcall(function()
     table.insert(Connections, UserInputService.TouchTap:Connect(function(touchPositions)
         if not State.FastBreak then return end
@@ -2698,6 +2745,7 @@ local function tryBreak(x, y, includeBg, onlyId)
     end
     if Refs.Punch then
         local ok, err = pcall(Refs.Punch, x, y, State.MutePunch or nil, nil)
+        sendPunchPacket(x, y)
         if not ok then
             State.LastAction = "Error pukul: " .. tostring(err)
             return nil
@@ -2712,8 +2760,9 @@ local function tryBreak(x, y, includeBg, onlyId)
         if State.FastBreak then
             local need = hitsNeeded(id)
             for h = 2, need do
-                task.wait(0.185)
+                task.wait(0.08)
                 if not alive() or tileAt(layer, x, y) ~= id then break end
+                sendPunchPacket(x, y)
                 pcall(Refs.Punch, x, y, State.MutePunch or nil, nil)
                 sendHitFx(x, y)
                 if State.Visual then Anim.swing(x, y, "punch") end
@@ -2737,14 +2786,16 @@ local function tryBreak(x, y, includeBg, onlyId)
         HitCount[key] = hc
     end
     hc.n += 1
+    sendPunchPacket(x, y)
     sendHitFx(x, y)
     if State.Visual then Anim.swing(x, y, "punch") end
     local need = hitsNeeded(id)
     if State.FastBreak and hc.n < need then
         while hc.n < need and alive() do
-            task.wait(0.185)
+            task.wait(0.08)
             hc.n += 1
             sendHitFx(x, y)
+            sendPunchPacket(x, y)
             if State.Visual then Anim.swing(x, y, "punch") end
         end
     end
