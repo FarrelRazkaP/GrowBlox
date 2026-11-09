@@ -29,27 +29,86 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
 local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local PlayerGui = LocalPlayer and (LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 10))
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local WorldRemotes = ReplicatedStorage:WaitForChild("WorldRemotes")
--- Remote lama (versi game sebelum ByteNet). Hanya dipakai kalau fungsi baru tidak ada.
-local SetTileRemote = WorldRemotes:FindFirstChild("SetTile")
+local Shared = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage:WaitForChild("Shared", 10)
+local WorldRemotes = ReplicatedStorage:FindFirstChild("WorldRemotes") or ReplicatedStorage:WaitForChild("WorldRemotes", 5)
+local SetTileRemote = WorldRemotes and WorldRemotes:FindFirstChild("SetTile")
 
-local ItemDB = require(Shared.ItemDB)
-local InventoryModule = require(Shared.Inventory)
-local NetOk, Net = pcall(require, Shared.Net)
+local ItemDB = nil
+if Shared and Shared:FindFirstChild("ItemDB") then
+    local ok, res = pcall(require, Shared.ItemDB)
+    if ok then ItemDB = res end
+end
+if not ItemDB then
+    pcall(function()
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+            if obj.Name == "ItemDB" and obj:IsA("ModuleScript") then
+                local ok, res = pcall(require, obj)
+                if ok then ItemDB = res; break end
+            end
+        end
+    end)
+end
+ItemDB = ItemDB or {}
 
-local GameGui = PlayerGui:WaitForChild("GameGui")
-local ParticlesOk, ParticlesModule = pcall(require, GameGui:WaitForChild("Particles"))
-local MenuModOk, MenuModule = pcall(require, GameGui:WaitForChild("WorldMenu"))
-local RolesOk, RolesModule = pcall(require, Shared:FindFirstChild("Roles"))
-local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
+local InventoryModule = nil
+if Shared and Shared:FindFirstChild("Inventory") then
+    local ok, res = pcall(require, Shared.Inventory)
+    if ok then InventoryModule = res end
+end
 
-local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
-))()
+local NetOk, Net = false, nil
+if Shared and Shared:FindFirstChild("Net") then
+    NetOk, Net = pcall(require, Shared.Net)
+end
+
+local GameGui = PlayerGui and (PlayerGui:FindFirstChild("GameGui") or PlayerGui:WaitForChild("GameGui", 10))
+local ParticlesOk, ParticlesModule = false, nil
+if GameGui and GameGui:FindFirstChild("Particles") then
+    ParticlesOk, ParticlesModule = pcall(require, GameGui.Particles)
+end
+
+local MenuModOk, MenuModule = false, nil
+if GameGui and GameGui:FindFirstChild("WorldMenu") then
+    MenuModOk, MenuModule = pcall(require, GameGui.WorldMenu)
+end
+
+local RolesOk, RolesModule = false, nil
+if Shared and Shared:FindFirstChild("Roles") then
+    RolesOk, RolesModule = pcall(require, Shared.Roles)
+end
+
+local SfxOk, SfxModule = false, nil
+if Shared and Shared:FindFirstChild("Sfx") then
+    SfxOk, SfxModule = pcall(require, Shared.Sfx)
+end
+
+local WindUI
+do
+    local urls = {
+        "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua",
+        "https://raw.githubusercontent.com/Footagesus/WindUI/refs/heads/main/dist/main.lua",
+        "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+    }
+    for _, u in ipairs(urls) do
+        local ok, lib = pcall(function()
+            local s = game:HttpGet(u)
+            if s and #s > 1000 then
+                return loadstring(s)()
+            end
+        end)
+        if ok and type(lib) == "table" and type(lib.CreateWindow) == "function" then
+            WindUI = lib
+            break
+        end
+    end
+end
+if not WindUI then
+    warn("[Kzoyz x Opus] Gagal memuat UI library (WindUI). Periksa koneksi internet.")
+    return
+end
 
 ---------------------------------------------------------------------
 -- PENGATURAN & DATA
@@ -349,7 +408,7 @@ local PlacedAt = {}   -- kapan tile di-place
 --       1. teks utuh (judul & deskripsi menu) dari daftar EN
 --       2. teks yang berubah-ubah (status, notifikasi) per frasa dari daftar PH
 --   - Menu WindUI dibungkus (I18N.wrap) supaya judul, deskripsi & isi status ikut diterjemahkan.
-local I18N = { Lang = "id", Saved = "id", Ask = true }
+local I18N = { Lang = "id", Saved = "id", Ask = false }
 
 do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 
