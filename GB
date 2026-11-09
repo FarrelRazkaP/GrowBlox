@@ -2094,7 +2094,7 @@ function Anim.bind(fn)
     for i = 1, last - 1 do
         local v = vals[i]
         if v == nil or (type(v) == "table" and rawget(v, "t") ~= nil and rawget(v, "facing") ~= nil) then
-            Anim.fn, Anim.idx, Anim.set = fn, i, su
+            Anim.fn, Anim.idx, Anim.set, Anim.get = fn, i, su, gu
             return true
         end
     end
@@ -2173,17 +2173,7 @@ function Anim.consider(v, trusted)
             local ok, isH = pcall(function()
                 return type(rawget(v, "punchRange")) == "function" and type(rawget(v, "handPower")) == "function"
             end)
-            if ok and isH then
-                Refs.Hud = v
-                if State.FastBreak then
-                    pcall(function()
-                        if not rawget(Refs.Hud, "__origHandPower") and type(rawget(Refs.Hud, "handPower")) == "function" then
-                            rawset(Refs.Hud, "__origHandPower", Refs.Hud.handPower)
-                            Refs.Hud.handPower = function(...) return 100 end
-                        end
-                    end)
-                end
-            end
+            if ok and isH then Refs.Hud = v end
         end
         if not Refs.Others then
             -- data pemain lain: punya list(), where(), playerAt()
@@ -2517,49 +2507,40 @@ local function sendHitFx(x, y)
 end
 
 ---------------------------------------------------------------------
--- AUTO BREAK / FAST BREAK GEMBUL (1 Hit Client + Server Rapid Hits - Anti-Rollback)
+-- AUTO BREAK / FAST BREAK GEMBUL (Rapid Auto-Burst - Tanpa Rollback)
 ---------------------------------------------------------------------
 local activePunching = {}
-local origActSend = nil
 local fastBreakSync = false
+local lastPunchTime = 0
 
-local function hookActSend()
-    if not (NetOk and Net and type(Net) == "table" and Net.act and type(Net.act.send) == "function") then return end
-    if origActSend then return end
-    origActSend = Net.act.send
-    Net.act.send = function(data, ...)
-        if State.FastBreak and type(data) == "table" and type(data.x) == "number" and type(data.y) == "number" then
-            local tx = math.floor(data.x)
-            local ty = math.floor(data.y)
-            local key = tx .. "," .. ty
-            local fg = tileAt("fg", tx, ty)
-            local layer, id
-            if fg and fg ~= 0 then
-                layer, id = "fg", fg
-            elseif State.BreakBackground then
-                local bg = tileAt("bg", tx, ty)
-                if bg and bg ~= 0 then layer, id = "bg", bg end
-            end
-            local res = origActSend(data, ...)
-            if id and canBreak(id) and not activePunching[key] then
-                local it = ItemDB and ItemDB[id]
-                local need = (it and rawget(it, "__origHits")) or (it and it.hits) or 3
-                if need > 1 then
-                    activePunching[key] = true
-                    task.spawn(function()
-                        for i = 2, need do
-                            task.wait(0.185)
-                            if not alive() or not State.FastBreak then break end
-                            pcall(origActSend, { x = tx + 0.5, y = ty + 0.5 })
-                        end
-                        activePunching[key] = nil
-                    end)
-                end
-            end
-            return res
-        end
-        return origActSend(data, ...)
+local function burstTile(tx, ty)
+    if not State.FastBreak then return end
+    local key = tx .. "," .. ty
+    if activePunching[key] then return end
+    local fg = tileAt("fg", tx, ty)
+    local layer, id
+    if fg and fg ~= 0 then
+        layer, id = "fg", fg
+    elseif State.BreakBackground then
+        local bg = tileAt("bg", tx, ty)
+        if bg and bg ~= 0 then layer, id = "bg", bg end
     end
+    if not (id and canBreak(id)) then return end
+    activePunching[key] = true
+    task.spawn(function()
+        local need = hitsNeeded(id)
+        for i = 2, need do
+            task.wait(0.18)
+            if not alive() or not State.FastBreak or tileAt(layer, tx, ty) ~= id then break end
+            if Refs.Punch then
+                pcall(Refs.Punch, tx, ty, State.MutePunch or nil, nil)
+            end
+            sendHitFx(tx, ty)
+            if State.Visual and Anim.swing then Anim.swing(tx, ty, "punch") end
+            if tileAt(layer, tx, ty) ~= id then break end
+        end
+        activePunching[key] = nil
+    end)
 end
 
 local function setFastBreak(on)
@@ -2573,54 +2554,6 @@ local function setFastBreak(on)
         State.BreakMs = 220
         State.AfterBreakMs = 250
     end
-
-    -- 1. Modifikasi ItemDB hits = 1 (dengan backup __origHits)
-    if ItemDB and type(ItemDB) == "table" then
-        pcall(function()
-            if setreadonly then setreadonly(ItemDB, false) end
-            if make_writeable then make_writeable(ItemDB) end
-        end)
-        for id, item in pairs(ItemDB) do
-            if type(item) == "table" and not (item.lock or item.area or item.guildLock or item.vend or item.display) then
-                pcall(function()
-                    if setreadonly then setreadonly(item, false) end
-                    if make_writeable then make_writeable(item) end
-                end)
-                if State.FastBreak then
-                    if rawget(item, "__origHits") == nil then
-                        rawset(item, "__origHits", item.hits)
-                    end
-                    item.hits = 1
-                else
-                    if rawget(item, "__origHits") ~= nil then
-                        item.hits = rawget(item, "__origHits")
-                        rawset(item, "__origHits", nil)
-                    end
-                end
-            end
-        end
-    end
-
-    -- 2. Modifikasi Refs.Hud.handPower = 100
-    if Refs.Hud and type(Refs.Hud) == "table" then
-        pcall(function()
-            if State.FastBreak then
-                if not rawget(Refs.Hud, "__origHandPower") and type(rawget(Refs.Hud, "handPower")) == "function" then
-                    rawset(Refs.Hud, "__origHandPower", Refs.Hud.handPower)
-                    Refs.Hud.handPower = function(...) return 100 end
-                end
-            else
-                if rawget(Refs.Hud, "__origHandPower") then
-                    Refs.Hud.handPower = rawget(Refs.Hud, "__origHandPower")
-                    rawset(Refs.Hud, "__origHandPower", nil)
-                end
-            end
-        end)
-    end
-
-    -- 3. Pastikan hook act.send aktif
-    pcall(hookActSend)
-
     if UI.FarmFastBreakToggle then
         pcall(function() UI.FarmFastBreakToggle:Set(State.FastBreak) end)
     end
@@ -2630,14 +2563,57 @@ local function setFastBreak(on)
     fastBreakSync = false
 end
 
--- Hook awal saat script dimuat
-pcall(hookActSend)
+-- Deteksi aksi pukul game secara langsung dari upvalue tangan (100% aman tanpa merusak game)
+table.insert(Connections, RunService.Heartbeat:Connect(function()
+    if not State.FastBreak or not Anim.fn or not Anim.idx or not Anim.get then return end
+    local ok, act = pcall(Anim.get, Anim.fn, Anim.idx)
+    if ok and type(act) == "table" and act.kind == "punch" and type(act.t) == "number" and act.t ~= lastPunchTime then
+        lastPunchTime = act.t
+        if type(act.x) == "number" and type(act.y) == "number" then
+            local tx, ty = math.floor(act.x), math.floor(act.y)
+            burstTile(tx, ty)
+        end
+    end
+end))
+
+-- Mouse listener di PC
+pcall(function()
+    local mouse = LocalPlayer:GetMouse()
+    if mouse then
+        table.insert(Connections, mouse.Button1Down:Connect(function()
+            if not State.FastBreak then return end
+            local v = getView()
+            if not v or not v.tiles or not v.ts or v.ts <= 0 then return end
+            local tx = math.floor((mouse.X - v.tiles.AbsolutePosition.X) / v.ts) + (State.CalibX or 0)
+            local ty = math.floor((mouse.Y - v.tiles.AbsolutePosition.Y) / v.ts) + (State.CalibY or 0)
+            task.delay(0.02, function()
+                burstTile(tx, ty)
+            end)
+        end))
+    end
+end)
+
+-- Touch listener di Mobile
+pcall(function()
+    table.insert(Connections, UserInputService.TouchTap:Connect(function(touchPositions)
+        if not State.FastBreak then return end
+        local pos = touchPositions and touchPositions[1]
+        if not pos then return end
+        local v = getView()
+        if not v or not v.tiles or not v.ts or v.ts <= 0 then return end
+        local tx = math.floor((pos.X - v.tiles.AbsolutePosition.X) / v.ts) + (State.CalibX or 0)
+        local ty = math.floor((pos.Y - v.tiles.AbsolutePosition.Y) / v.ts) + (State.CalibY or 0)
+        task.delay(0.02, function()
+            burstTile(tx, ty)
+        end)
+    end))
+end)
 
 local function hitsNeeded(id)
     if State.HitsOverride > 0 then return State.HitsOverride end
     local it = ItemDB[id]
     if not it then return 4 end
-    local h = (it.kind == "seed") and 20 or (rawget(it, "__origHits") or it.hits)
+    local h = (it.kind == "seed") and 20 or it.hits
     return tonumber(h) or 4
 end
 
