@@ -1,8 +1,8 @@
 
 pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
-        Title = "SkyP x Kzoyz",
-        Text = "Script berhasil dimuat! Membuka UI...",
+        Title = "Gembul",
+        Text = "Script Gembul berhasil dimuat! Menyiapkan UI & Fast Break...",
         Duration = 3,
     })
 end)
@@ -166,7 +166,7 @@ local Misc = {
     UpHeld = false,   -- tombol ▲ di layar ditahan
     DownHeld = false, -- tombol ▼ di layar ditahan
     CustomName = true,          -- watermark nama (selalu aktif, mati hanya saat script ditutup)
-    NameText = "Kzoyz x Opus",  -- teks watermark
+    NameText = "Gembul",  -- teks watermark
 }
 
 -- Auto Clear World
@@ -1421,63 +1421,146 @@ local function isGameFn(fn)
 end
 
 ---------------------------------------------------------------------
--- FAST BREAK (Real Server-Side Fast Break - Tanpa Rollback / Muncul Lagi)
+-- FAST BREAK GEMBUL (1 Hit Client + Server Rapid Hits - Anti-Rollback)
 ---------------------------------------------------------------------
-local OrigPunch = nil
-local PunchingTiles = {}
+local activePunching = {}
+local origActSend = nil
+local origRefsPunch = nil
 
-local function setFastBreak(on)
-    State.FastBreak = (on == true)
-    if State.FastBreak then
-        State.BreakMs = 190
-        State.AfterBreakMs = 0
-    else
-        State.BreakMs = 220
-        State.AfterBreakMs = 300
-    end
-end
-
-local function hookManualPunch()
-    if not Refs.Punch or OrigPunch then return end
-    if hookfunction then
-        OrigPunch = hookfunction(Refs.Punch, function(x, y, mute, extra)
-            local res = OrigPunch(x, y, mute, extra)
-            if State.FastBreak and type(x) == "number" and type(y) == "number" then
-                local key = x .. "," .. y
-                if not PunchingTiles[key] then
-                    local fg = tileAt("fg", x, y)
-                    local layer, id
-                    if fg and fg ~= 0 then
-                        layer, id = "fg", fg
-                    else
-                        local bg = tileAt("bg", x, y)
-                        if bg and bg ~= 0 then
-                            layer, id = "bg", bg
-                        end
-                    end
-                    if layer and id and canBreak(id) then
-                        PunchingTiles[key] = true
+local function hookNetAct()
+    if not (NetOk and Net and Net.act and type(Net.act.send) == "function") then return end
+    if origActSend then return end
+    origActSend = Net.act.send
+    Net.act.send = function(data, ...)
+        local res = origActSend(data, ...)
+        if State.FastBreak and type(data) == "table" and type(data.x) == "number" and type(data.y) == "number" then
+            local tx = math.floor(data.x)
+            local ty = math.floor(data.y)
+            local key = tx .. "," .. ty
+            if not activePunching[key] then
+                local layer, id = "fg", tileAt("fg", tx, ty)
+                if not id or id == 0 then layer, id = "bg", tileAt("bg", tx, ty) end
+                if id and id ~= 0 and canBreak(id) then
+                    local it = ItemDB and ItemDB[id]
+                    local hitsNeeded = (it and rawget(it, "__origHits")) or (it and it.hits) or 3
+                    if hitsNeeded > 1 then
+                        activePunching[key] = true
                         task.spawn(function()
-                            local count = 0
-                            while alive() and count < 40 do
+                            for i = 2, hitsNeeded do
                                 task.wait(0.185)
-                                local cur = tileAt(layer, x, y)
-                                if not cur or cur == 0 or cur ~= id then
-                                    break
-                                end
-                                count = count + 1
-                                pcall(OrigPunch, x, y, State.MutePunch or nil, nil)
+                                if not alive() then break end
+                                local cur = tileAt(layer, tx, ty)
+                                if cur == 0 or (cur ~= nil and cur ~= id) then break end
+                                pcall(origActSend, { x = tx + 0.5, y = ty + 0.5 })
+                                if Refs.Punch then pcall(Refs.Punch, tx, ty, State.MutePunch or nil, nil) end
                             end
-                            PunchingTiles[key] = nil
+                            task.wait(0.185)
+                            sendSetTile(layer, tx, ty, 0)
+                            activePunching[key] = nil
                         end)
                     end
                 end
             end
-            return res
+        end
+        return res
+    end
+end
+
+local function hookRefsPunch()
+    if not Refs.Punch or origRefsPunch then return end
+    origRefsPunch = Refs.Punch
+    Refs.Punch = function(x, y, mute, extra)
+        local res = origRefsPunch(x, y, mute, extra)
+        if State.FastBreak and type(x) == "number" and type(y) == "number" then
+            local key = x .. "," .. y
+            if not activePunching[key] then
+                local layer, id = "fg", tileAt("fg", x, y)
+                if not id or id == 0 then layer, id = "bg", tileAt("bg", x, y) end
+                if id and id ~= 0 and canBreak(id) then
+                    local it = ItemDB and ItemDB[id]
+                    local hitsNeeded = (it and rawget(it, "__origHits")) or (it and it.hits) or 3
+                    if hitsNeeded > 1 then
+                        activePunching[key] = true
+                        task.spawn(function()
+                            for i = 2, hitsNeeded do
+                                task.wait(0.185)
+                                if not alive() then break end
+                                local cur = tileAt(layer, x, y)
+                                if cur == 0 or (cur ~= nil and cur ~= id) then break end
+                                pcall(origRefsPunch, x, y, State.MutePunch or nil, nil)
+                                sendHitFx(x, y)
+                            end
+                            task.wait(0.185)
+                            sendSetTile(layer, x, y, 0)
+                            activePunching[key] = nil
+                        end)
+                    end
+                end
+            end
+        end
+        return res
+    end
+end
+
+local function setFastBreak(on)
+    State.FastBreak = (on == true)
+    if ItemDB and type(ItemDB) == "table" then
+        pcall(function()
+            if setreadonly then setreadonly(ItemDB, false) end
+            if make_writeable then make_writeable(ItemDB) end
         end)
+        for id, item in pairs(ItemDB) do
+            if type(item) == "table" and not (item.lock or item.area or item.guildLock or item.vend or item.display) then
+                pcall(function()
+                    if setreadonly then setreadonly(item, false) end
+                    if make_writeable then make_writeable(item) end
+                end)
+                if State.FastBreak then
+                    if rawget(item, "__origHits") == nil then
+                        rawset(item, "__origHits", item.hits)
+                    end
+                    item.hits = 1
+                else
+                    if rawget(item, "__origHits") ~= nil then
+                        item.hits = rawget(item, "__origHits")
+                        rawset(item, "__origHits", nil)
+                    end
+                end
+            end
+        end
+    end
+    if Refs.Hud and type(Refs.Hud) == "table" then
+        if State.FastBreak then
+            if not rawget(Refs.Hud, "__origHandPower") and type(rawget(Refs.Hud, "handPower")) == "function" then
+                rawset(Refs.Hud, "__origHandPower", Refs.Hud.handPower)
+                Refs.Hud.handPower = function(...) return 100 end
+            end
+            State.BreakMs = 190
+            State.AfterBreakMs = 0
+        else
+            if rawget(Refs.Hud, "__origHandPower") then
+                Refs.Hud.handPower = rawget(Refs.Hud, "__origHandPower")
+                rawset(Refs.Hud, "__origHandPower", nil)
+            end
+            State.BreakMs = 220
+            State.AfterBreakMs = 300
+        end
+    end
+    if State.FastBreak then
+        pcall(hookNetAct)
+        pcall(hookRefsPunch)
     end
 end
 if State.FastBreak then pcall(setFastBreak, true) end
+task.spawn(function()
+    while task.wait(2.5) do
+        if alive() and State.FastBreak then
+            pcall(setFastBreak, true)
+            pcall(hookNetAct)
+            pcall(hookRefsPunch)
+        end
+    end
+end)
 
 local function findRefs()
     Refs.World, Refs.Inv, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = nil, nil, nil, nil, nil, nil
@@ -1548,7 +1631,6 @@ local function findRefs()
                 Refs.SetTile = v
             elseif not Refs.Punch and isPunchFn(v) then
                 Refs.Punch = v
-                pcall(hookManualPunch)
             end
         end
         if Refs.World and Refs.Inv and Refs.SetTile and Refs.State and Refs.Punch
@@ -1893,6 +1975,43 @@ local function breakableAt(x, y)
     return State.BreakBackground and bg ~= nil and bg ~= 0 and canBreak(bg)
 end
 
+-- Fast Break Input Listener: jika player tap block di layar, langsung selesaikan di server
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input)
+    if not State.FastBreak then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local pos = input.Position
+    local v = getView()
+    if not v then return end
+    local relX = pos.X - v.tiles.AbsolutePosition.X
+    local relY = pos.Y - v.tiles.AbsolutePosition.Y
+    if relX < 0 or relY < 0 or relX > v.tiles.AbsoluteSize.X or relY > v.tiles.AbsoluteSize.Y then return end
+    local tx = math.floor(relX / v.ts) + (State.CalibX or 0)
+    local ty = math.floor(relY / v.ts) + (State.CalibY or 0)
+    local key = tx .. "," .. ty
+    if activePunching[key] then return end
+    local layer, id = "fg", tileAt("fg", tx, ty)
+    if not id or id == 0 then layer, id = "bg", tileAt("bg", tx, ty) end
+    if id and id ~= 0 and canBreak(id) then
+        local it = ItemDB and ItemDB[id]
+        local hitsNeeded = (it and rawget(it, "__origHits")) or (it and it.hits) or 3
+        activePunching[key] = true
+        task.spawn(function()
+            for i = 1, hitsNeeded do
+                if not alive() then break end
+                local cur = tileAt(layer, tx, ty)
+                if cur == 0 or (cur ~= nil and cur ~= id) then break end
+                if Refs.Punch then pcall(Refs.Punch, tx, ty, State.MutePunch or nil, nil) end
+                sendHitFx(tx, ty)
+                if State.Visual and Anim.swing then Anim.swing(tx, ty, "punch") end
+                if i < hitsNeeded then task.wait(0.185) end
+            end
+            task.wait(0.185)
+            sendSetTile(layer, tx, ty, 0)
+            activePunching[key] = nil
+        end)
+    end
+end))
+
 -- Pukul 1 kali. Hasil: "hit" / "broke" / nil
 -- includeBg = ikut pecah background
 local function tryBreak(x, y, includeBg)
@@ -1932,15 +2051,22 @@ local function tryBreak(x, y, includeBg)
             return "broke"
         end
         if State.FastBreak then
-            local pFn = OrigPunch or Refs.Punch
-            local count = 0
-            while tileAt(layer, x, y) == id and alive() and count < 35 do
-                task.wait(0.185)
-                if tileAt(layer, x, y) ~= id then break end
-                count = count + 1
-                pcall(pFn, x, y, State.MutePunch or nil, nil)
+            local pFn = Refs.Punch
+            local it = ItemDB and ItemDB[id]
+            local need = (it and rawget(it, "__origHits")) or (it and it.hits) or 3
+            for i = 1, need do
+                if pFn then pcall(pFn, x, y, State.MutePunch or nil, nil) end
+                sendHitFx(x, y)
                 if State.Visual then Anim.swing(x, y, "punch") end
+                if tileAt(layer, x, y) ~= id then
+                    Drops.brokeAt[key] = os.clock()
+                    State.Broken += 1
+                    State.LastAction = "Break " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
+                    return "broke"
+                end
+                if i < need then task.wait(0.185) end
             end
+            sendSetTile(layer, x, y, 0)
             if tileAt(layer, x, y) ~= id then
                 Drops.brokeAt[key] = os.clock()
                 State.Broken += 1
@@ -8307,10 +8433,10 @@ do (function()
 end)() end
 
 local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "SkyP x Kzoyz [Fast Break]",
-    Icon = "cloud-lightning",
-    Author = "v5.9.0 | Fast Break Fixed",
-    Folder = "SkyPKzoyz",
+    Title = "Gembul",
+    Icon = "sprout",
+    Author = "v5.9.0 | Gembul",
+    Folder = "GembulHub",
     Size = UDim2.fromOffset(640, 380),
     Theme = "Dark",
     Transparent = true,
@@ -8321,8 +8447,8 @@ local Window = I18N.wrap(WindUI:CreateWindow({
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
     Window:EditOpenButton({
-        Title = "SkyP x Kzoyz",
-        Icon = "cloud-lightning",
+        Title = "Gembul",
+        Icon = "sprout",
         Draggable = true,
         OnlyMobile = false,
     })
@@ -11749,7 +11875,7 @@ do
 end
 
 task.spawn(function()
-    reconnect("Kzoyz x Opus v5.2")
+    reconnect("Gembul v5.9.0")
     -- Penjaga dari config dinyalakan setelah data pemain ketemu
     -- (supaya pemain yang sudah ada dicatat dulu)
     if Config.saved("Penjaga", "On") == true and alive() then
