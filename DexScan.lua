@@ -1,4 +1,4 @@
--- Gembul Dex / Game Structure Inspector for GrowBlox
+-- Gembul Dex / Game Structure Inspector for GrowBlox (Deep GC Scanner)
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
@@ -11,91 +11,106 @@ local function log(str)
 end
 
 log("=========================================")
-log("[Gembul Inspector] Scanning GrowBlox Structure...")
+log("[Gembul Deep Inspector] Scanning Runtime Heap & Modules...")
 log("=========================================")
 
--- 1. Scan ReplicatedStorage Remotes & Folders
-log("\n--- [1] WorldRemotes List ---")
-local wr = ReplicatedStorage:FindFirstChild("WorldRemotes")
-if wr then
-    for _, rem in ipairs(wr:GetChildren()) do
-        log("  Remote: " .. rem.Name .. " (" .. rem.ClassName .. ")")
-    end
-else
-    log("  WorldRemotes not found in ReplicatedStorage!")
-end
+-- 1. Find Net table via getgc
+local foundNet = nil
+local foundItemDB = nil
+local foundWorld = nil
 
--- 2. Scan Shared.Net
-log("\n--- [2] Shared.Net Inspection ---")
-local shared = ReplicatedStorage:FindFirstChild("Shared")
-if shared then
-    local netMod = shared:FindFirstChild("Net")
-    if netMod and netMod:IsA("ModuleScript") then
-        local ok, Net = pcall(require, netMod)
-        if ok and type(Net) == "table" then
-            log("  Successfully required Shared.Net!")
-            for k, v in pairs(Net) do
-                local vType = type(v)
-                if vType == "table" then
-                    local subKeys = {}
-                    for sk, sv in pairs(v) do subKeys[#subKeys + 1] = tostring(sk) .. " (" .. type(sv) .. ")" end
-                    log("    Net." .. tostring(k) .. " = table { " .. table.concat(subKeys, ", ") .. " }")
-                else
-                    log("    Net." .. tostring(k) .. " (" .. vType .. ")")
+if type(getgc) == "function" then
+    local ok, objects = pcall(getgc, true)
+    if not ok or type(objects) ~= "table" then ok, objects = pcall(getgc) end
+    if ok and type(objects) == "table" then
+        log("  getgc returned " .. #objects .. " objects. Inspecting...")
+        for _, v in pairs(objects) do
+            if type(v) == "table" then
+                -- Check for Net
+                if not foundNet and rawget(v, "call") and rawget(v, "on") and rawget(v, "worldTag") then
+                    foundNet = v
+                end
+                -- Check for ItemDB
+                if not foundItemDB and rawget(v, 2) and type(rawget(v, 2)) == "table" and rawget(rawget(v, 2), "hits") then
+                    foundItemDB = v
+                end
+                -- Check for World
+                if not foundWorld and rawget(v, "fg") and rawget(v, "bg") and rawget(v, "w") and rawget(v, "h") then
+                    foundWorld = v
                 end
             end
-            if Net.CALLS and type(Net.CALLS) == "table" then
-                log("  Net.CALLS:")
-                for ck, cv in pairs(Net.CALLS) do
-                    log("    CALL: " .. tostring(ck) .. " -> " .. tostring(cv))
-                end
-            end
-            if Net.EVENTS and type(Net.EVENTS) == "table" then
-                log("  Net.EVENTS:")
-                for ek, ev in pairs(Net.EVENTS) do
-                    log("    EVENT: " .. tostring(ek) .. " -> " .. tostring(ev))
-                end
-            end
-        else
-            log("  Failed to require Shared.Net: " .. tostring(Net))
+            if foundNet and foundItemDB and foundWorld then break end
         end
     else
-        log("  Shared.Net ModuleScript not found!")
+        log("  getgc failed: " .. tostring(objects))
     end
+else
+    log("  getgc is not available on this executor!")
 end
 
--- 3. Scan PlayerScripts
-log("\n--- [3] PlayerScripts List ---")
-if LocalPlayer then
-    local ps = LocalPlayer:FindFirstChild("PlayerScripts")
-    if ps then
-        for _, s in ipairs(ps:GetChildren()) do
-            log("  Script: " .. s.Name .. " (" .. s.ClassName .. ")")
+if foundNet then
+    log("\n[!] SUCCESS: Found Runtime Net Table!")
+    for k, v in pairs(foundNet) do
+        local vt = type(v)
+        if vt == "table" then
+            local items = {}
+            for subK, subV in pairs(v) do
+                items[#items + 1] = tostring(subK) .. "=" .. tostring(subV)
+                if #items >= 15 then items[#items + 1] = "..."; break end
+            end
+            log("  Net." .. tostring(k) .. " = { " .. table.concat(items, ", ") .. " }")
+        else
+            log("  Net." .. tostring(k) .. " (" .. vt .. ")")
         end
     end
+
+    if foundNet.punch and type(foundNet.punch) == "table" then
+        log("\n--- Net.punch Details ---")
+        for pk, pv in pairs(foundNet.punch) do
+            log("  Net.punch." .. tostring(pk) .. " = " .. tostring(pv) .. " (" .. type(pv) .. ")")
+            if type(pv) == "function" and getupvalues then
+                local ups = getupvalues(pv)
+                for ui, uv in pairs(ups) do
+                    log("    Upvalue[" .. ui .. "] = " .. tostring(uv) .. " (" .. type(uv) .. ")")
+                end
+            end
+        end
+    end
+
+    if foundNet.CALLS and type(foundNet.CALLS) == "table" then
+        log("\n--- Net.CALLS (RemoteFunctions) ---")
+        for ck, cv in pairs(foundNet.CALLS) do
+            log("  CALL: " .. tostring(ck) .. " -> " .. tostring(cv))
+        end
+    end
+
+    if foundNet.EVENTS and type(foundNet.EVENTS) == "table" then
+        log("\n--- Net.EVENTS (RemoteEvents) ---")
+        for ek, ev in pairs(foundNet.EVENTS) do
+            log("  EVENT: " .. tostring(ek) .. " -> " .. tostring(ev))
+        end
+    end
+else
+    log("\n[-] Net table not found in GC!")
+end
+
+if foundItemDB then
+    log("\n[!] Found ItemDB in GC! Total items sampled: " .. (foundItemDB[2] and ("Dirt hits=" .. tostring(foundItemDB[2].hits)) or "OK"))
+end
+
+if foundWorld then
+    log("\n[!] Found World in GC! Size: " .. tostring(foundWorld.w) .. "x" .. tostring(foundWorld.h))
 end
 
 log("\n=========================================")
-log("[Gembul Inspector] Scan Complete!")
+log("[Gembul Deep Inspector] Scan Complete!")
 log("=========================================")
 
 local fullText = table.concat(logLines, "\n")
 
--- Otomatis salin ke clipboard
-if setclipboard then
-    pcall(setclipboard, fullText)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "Gembul Inspector",
-            Text = "Hasil scan sudah disalin ke Clipboard! Tinggal Paste (Ctrl+V) di chat.",
-            Duration = 5,
-        })
-    end)
-elseif toclipboard then
-    pcall(toclipboard, fullText)
-end
+if setclipboard then pcall(setclipboard, fullText)
+elseif toclipboard then pcall(toclipboard, fullText) end
 
--- Tampilkan UI popup sederhana di layar
 pcall(function()
     local oldGui = CoreGui:FindFirstChild("GembulScanGui")
     if oldGui then oldGui:Destroy() end
@@ -106,8 +121,8 @@ pcall(function()
     sg.Parent = CoreGui
 
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 480, 0, 320)
-    frame.Position = UDim2.new(0.5, -240, 0.5, -160)
+    frame.Size = UDim2.new(0, 520, 0, 360)
+    frame.Position = UDim2.new(0.5, -260, 0.5, -180)
     frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
     frame.BorderSizePixel = 0
     frame.Parent = sg
@@ -116,7 +131,7 @@ pcall(function()
     title.Size = UDim2.new(1, 0, 0, 36)
     title.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.Text = "  Hasil Scan Dex / Remotes (Sudah Ter-Copy ke Clipboard)"
+    title.Text = "  Hasil Deep GC Scan (Sudah Ter-Copy ke Clipboard)"
     title.TextSize = 14
     title.Font = Enum.Font.SourceSansBold
     title.TextXAlignment = Enum.TextXAlignment.Left
