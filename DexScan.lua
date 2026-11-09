@@ -8,69 +8,63 @@ print("[Gembul Inspector] Scanning GrowBlox Structure...")
 print("=========================================")
 
 -- 1. Scan ReplicatedStorage Remotes & Folders
-print("\n--- [1] ReplicatedStorage Children ---")
-for _, child in ipairs(ReplicatedStorage:GetChildren()) do
-    local info = child.Name .. " (" .. child.ClassName .. ")"
-    if child:IsA("Folder") or child:IsA("Configuration") or child:IsA("Model") then
-        local subs = {}
-        for _, sub in ipairs(child:GetChildren()) do
-            subs[#subs + 1] = sub.Name .. " [" .. sub.ClassName .. "]"
-        end
-        info = info .. " -> Sub: " .. table.concat(subs, ", ")
+print("\n--- [1] WorldRemotes List ---")
+local wr = ReplicatedStorage:FindFirstChild("WorldRemotes")
+if wr then
+    for _, rem in ipairs(wr:GetChildren()) do
+        print("  Remote: " .. rem.Name .. " (" .. rem.ClassName .. ")")
     end
-    print("  " .. info)
+else
+    print("  WorldRemotes not found in ReplicatedStorage!")
 end
 
--- 2. Scan PlayerScripts & PlayerGui
-print("\n--- [2] LocalPlayer Scripts ---")
+-- 2. Scan Shared.Net
+print("\n--- [2] Shared.Net Inspection ---")
+local shared = ReplicatedStorage:FindFirstChild("Shared")
+if shared then
+    local netMod = shared:FindFirstChild("Net")
+    if netMod and netMod:IsA("ModuleScript") then
+        local ok, Net = pcall(require, netMod)
+        if ok and type(Net) == "table" then
+            print("  Successfully required Shared.Net!")
+            for k, v in pairs(Net) do
+                local vType = type(v)
+                if vType == "table" then
+                    local subKeys = {}
+                    for sk, sv in pairs(v) do subKeys[#subKeys + 1] = tostring(sk) .. " (" .. type(sv) .. ")" end
+                    print("    Net." .. tostring(k) .. " = table { " .. table.concat(subKeys, ", ") .. " }")
+                else
+                    print("    Net." .. tostring(k) .. " (" .. vType .. ")")
+                end
+            end
+            if Net.CALLS and type(Net.CALLS) == "table" then
+                print("  Net.CALLS:")
+                for ck, cv in pairs(Net.CALLS) do
+                    print("    CALL: " .. tostring(ck) .. " -> " .. tostring(cv))
+                end
+            end
+            if Net.EVENTS and type(Net.EVENTS) == "table" then
+                print("  Net.EVENTS:")
+                for ek, ev in pairs(Net.EVENTS) do
+                    print("    EVENT: " .. tostring(ek) .. " -> " .. tostring(ev))
+                end
+            end
+        else
+            print("  Failed to require Shared.Net: " .. tostring(Net))
+        end
+    else
+        print("  Shared.Net ModuleScript not found!")
+    end
+end
+
+-- 3. Scan PlayerScripts
+print("\n--- [3] PlayerScripts List ---")
 if LocalPlayer then
     local ps = LocalPlayer:FindFirstChild("PlayerScripts")
     if ps then
-        print("  [PlayerScripts]:")
-        for _, s in ipairs(ps:GetDescendants()) do
-            if s:IsA("LocalScript") or s:IsA("ModuleScript") then
-                print("    - " .. s:GetFullName():gsub("Players%." .. LocalPlayer.Name .. "%.", ""))
-            end
+        for _, s in ipairs(ps:GetChildren()) do
+            print("  Script: " .. s.Name .. " (" .. s.ClassName .. ")")
         end
-    end
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then
-        print("  [PlayerGui Scripts]:")
-        for _, s in ipairs(pg:GetDescendants()) do
-            if s:IsA("LocalScript") or s:IsA("ModuleScript") then
-                print("    - " .. s:GetFullName():gsub("Players%." .. LocalPlayer.Name .. "%.", ""))
-            end
-        end
-    end
-end
-
--- 3. Scan StarterPlayerScripts
-print("\n--- [3] StarterPlayerScripts ---")
-local sp = game:GetService("StarterPlayer")
-local sps = sp and sp:FindFirstChild("StarterPlayerScripts")
-if sps then
-    for _, s in ipairs(sps:GetDescendants()) do
-        if s:IsA("LocalScript") or s:IsA("ModuleScript") then
-            print("    - " .. s.Name .. " [" .. s.ClassName .. "]")
-        end
-    end
-end
-
--- 4. Check Shared Modules & Remotes
-print("\n--- [4] Shared Net & Remotes Check ---")
-local shared = ReplicatedStorage:FindFirstChild("Shared")
-if shared then
-    print("  Shared found! Children:")
-    for _, c in ipairs(shared:GetChildren()) do
-        print("    - " .. c.Name .. " [" .. c.ClassName .. "]")
-    end
-end
-
-local wr = ReplicatedStorage:FindFirstChild("WorldRemotes")
-if wr then
-    print("  WorldRemotes found! Children:")
-    for _, c in ipairs(wr:GetChildren()) do
-        print("    - " .. c.Name .. " [" .. c.ClassName .. "]")
     end
 end
 
