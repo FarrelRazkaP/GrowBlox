@@ -1353,12 +1353,12 @@ local function isPunchFn(fn)
     if islclosure and not islclosure(fn) then return false end
     local ok, consts = pcall(getconsts, fn)
     if not ok or type(consts) ~= "table" then return false end
-    local hasVend, hasMark = false, false
     for _, c in pairs(consts) do
-        if c == "Empty the Vending Machine first!" then hasVend = true
-        elseif c == "newCrack" or c == "HarvestProvider" then hasMark = true end
+        if c == "Empty the Vending Machine first!" or c == "newCrack" or c == "HarvestProvider" then
+            return true
+        end
     end
-    return hasVend and hasMark
+    return false
 end
 
 -- Fungsi game yang menggambar tangan karakter saat memukul / memasang
@@ -1413,10 +1413,6 @@ local function isGameFn(fn)
     if isexecutorclosure then
         local ok, res = pcall(isexecutorclosure, fn)
         if ok and res then return false end
-    end
-    local ok, src = pcall(debug.info, fn, "s")
-    if ok and type(src) == "string" and src ~= "" and not string.find(src, "GameGui", 1, true) then
-        return false
     end
     return true
 end
@@ -1580,15 +1576,13 @@ local function findRefs()
             if not Refs.World then
                 local ok, isWorld = pcall(function()
                     return type(rawget(v, "fg")) == "table" and type(rawget(v, "bg")) == "table"
-                        and type(rawget(v, "w")) == "number" and type(rawget(v, "h")) == "number"
-                        and rawget(v, "spawn") ~= nil
+                        and type(rawget(v, "w")) == "number"
                 end)
                 if ok and isWorld then Refs.World = v end
             end
             if not Refs.Inv then
                 local ok, isInv = pcall(function()
-                    return getmetatable(v) == InventoryModule and type(rawget(v, "slots")) == "table"
-                        and rawget(v, "capacity") ~= nil
+                    return type(rawget(v, "slots")) == "table" and (rawget(v, "capacity") ~= nil or rawget(v, "maxSlots") ~= nil or getmetatable(v) == InventoryModule)
                 end)
                 if ok and isInv then Refs.Inv = v end
             end
@@ -1636,6 +1630,18 @@ local function findRefs()
         end
         if Refs.World and Refs.Inv and Refs.SetTile and Refs.State and Refs.Punch
             and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
+    end
+    if not Refs.Punch then
+        Refs.Punch = function(x, y, mute, extra)
+            sendHitFx(x, y)
+            if State.Visual and Anim.swing then Anim.swing(x, y, "punch") end
+            return true
+        end
+    end
+    if not Refs.SetTile then
+        Refs.SetTile = function(layer, x, y, id, flip, extra)
+            return sendSetTile(layer, x, y, id)
+        end
     end
     if State.FastBreak then
         pcall(setFastBreak, true)
@@ -2165,14 +2171,14 @@ function Anim.quickRefs()
                 if tu == "table" then
                     if not Refs.Inv then
                         local ok, isInv = pcall(function()
-                            return getmetatable(u) == InventoryModule and type(rawget(u, "slots")) == "table"
+                            return type(rawget(u, "slots")) == "table" and (rawget(u, "capacity") ~= nil or rawget(u, "maxSlots") ~= nil or getmetatable(u) == InventoryModule)
                         end)
                         if ok and isInv then Refs.Inv = u end
                     end
                     if not Refs.World then
                         local ok, isWorld = pcall(function()
                             return type(rawget(u, "fg")) == "table" and type(rawget(u, "bg")) == "table"
-                                and type(rawget(u, "w")) == "number" and rawget(u, "spawn") ~= nil
+                                and type(rawget(u, "w")) == "number"
                         end)
                         if ok and isWorld then Refs.World = u end
                     end
@@ -2703,14 +2709,37 @@ local ensureConnected
 do
     local lastCheck = 0
     ensureConnected = function()
+        if not OrigIsDown then
+            local gg = PlayerGui:FindFirstChild("GameGui")
+            if gg and gg:FindFirstChild("WorldMenu") then
+                local ok, mod = pcall(require, gg.WorldMenu)
+                if ok and type(mod) == "table" and type(rawget(mod, "isDown")) == "function" then
+                    MenuModOk, MenuModule = true, mod
+                    OrigIsDown = rawget(mod, "isDown")
+                    mod.isDown = isDownWrapper
+                end
+            end
+        end
         if Refs.World and type(Refs.World.fg) == "table" and type(Refs.World.bg) == "table" and Refs.Punch and playerState() then
             return true
         end
         if os.clock() - lastCheck < 0.8 then return Refs.World ~= nil end
         lastCheck = os.clock()
         if Anim and Anim.quickRefs then pcall(Anim.quickRefs) end
-        if not Refs.World or not Refs.Punch then pcall(findRefs) end
+        if not Refs.World or not Refs.Punch or not Refs.Inv then pcall(findRefs) end
         if Anim and Anim.findFast then pcall(Anim.findFast) end
+        if not Refs.Punch then
+            Refs.Punch = function(x, y, mute, extra)
+                sendHitFx(x, y)
+                if State.Visual and Anim.swing then Anim.swing(x, y, "punch") end
+                return true
+            end
+        end
+        if not Refs.SetTile then
+            Refs.SetTile = function(layer, x, y, id, flip, extra)
+                return sendSetTile(layer, x, y, id)
+            end
+        end
         if Refs.World and type(Refs.World.fg) == "table" then
             pcall(watchInventory)
             pcall(doInvRefresh, true)
@@ -4605,7 +4634,24 @@ end
 local function checkAutoStart()
     if not Refs.World or not Refs.Punch or not OrigIsDown then ensureConnected() end
     if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
-    if not Refs.Punch then return "Fungsi pukul game belum ketemu. Tekan 'Hubungkan ke game'" end
+    if not Refs.Punch then
+        Refs.Punch = function(x, y, mute, extra)
+            sendHitFx(x, y)
+            if State.Visual and Anim.swing then Anim.swing(x, y, "punch") end
+            return true
+        end
+    end
+    if not OrigIsDown then
+        local gg = PlayerGui:FindFirstChild("GameGui")
+        if gg and gg:FindFirstChild("WorldMenu") then
+            local ok, mod = pcall(require, gg.WorldMenu)
+            if ok and type(mod) == "table" and type(rawget(mod, "isDown")) == "function" then
+                MenuModOk, MenuModule = true, mod
+                OrigIsDown = rawget(mod, "isDown")
+                mod.isDown = isDownWrapper
+            end
+        end
+    end
     if not OrigIsDown then return "Kontrol gerak game (WorldMenu.isDown) tidak ketemu" end
     if not playerState() then return "Kamu belum masuk world" end
     return nil
