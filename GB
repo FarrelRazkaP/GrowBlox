@@ -2195,7 +2195,6 @@ function Anim.consider(v, trusted)
             Refs.SetTile = v
         elseif not Refs.Punch and isPunchFn(v) then
             Refs.Punch = v
-            pcall(initPunchHook)
         end
     end
 end
@@ -2510,9 +2509,11 @@ end
 -- AUTO BREAK / FAST BREAK GEMBUL (Server-Valid - Anti-Rollback)
 ---------------------------------------------------------------------
 local BurstActive = {}
-local OrigPunchHook = nil
+local fastBreakSync = false
 
 local function setFastBreak(on)
+    if fastBreakSync then return end
+    fastBreakSync = true
     State.FastBreak = (on == true)
     if State.FastBreak then
         State.BreakMs = 190
@@ -2527,6 +2528,7 @@ local function setFastBreak(on)
     if UI.SpeedFastBreakToggle then
         pcall(function() UI.SpeedFastBreakToggle:Set(State.FastBreak) end)
     end
+    fastBreakSync = false
 end
 
 local function startTileBurst(x, y)
@@ -2547,12 +2549,11 @@ local function startTileBurst(x, y)
     BurstActive[key] = true
     task.spawn(function()
         local need = hitsNeeded(id)
-        local punchFn = OrigPunchHook or Refs.Punch
         for i = 2, need do
             task.wait(0.185)
-            if not alive() or tileAt(layer, x, y) ~= id then break end
-            if punchFn then
-                pcall(punchFn, x, y, State.MutePunch or nil, nil)
+            if not alive() or not State.FastBreak or tileAt(layer, x, y) ~= id then break end
+            if Refs.Punch then
+                pcall(Refs.Punch, x, y, State.MutePunch or nil, nil)
             end
             sendHitFx(x, y)
             if State.Visual and Anim.swing then Anim.swing(x, y, "punch") end
@@ -2560,22 +2561,6 @@ local function startTileBurst(x, y)
         end
         BurstActive[key] = nil
     end)
-end
-
-local function initPunchHook()
-    if hookfunction and Refs.Punch and not OrigPunchHook then
-        pcall(function()
-            OrigPunchHook = hookfunction(Refs.Punch, function(x, y, mute, extra)
-                local res = OrigPunchHook(x, y, mute, extra)
-                if State.FastBreak and type(x) == "number" and type(y) == "number" then
-                    task.delay(0.02, function()
-                        startTileBurst(x, y)
-                    end)
-                end
-                return res
-            end)
-        end)
-    end
 end
 
 table.insert(Connections, UserInputService.InputBegan:Connect(function(input, processed)
@@ -9675,6 +9660,7 @@ safe(function()
         Desc = "Pecah block cepat otomatis tanpa rollback (server valid)",
         Value = State.FastBreak,
         Callback = function(on)
+            if fastBreakSync then return end
             setFastBreak(on)
             notify("Gembul", on and "Auto Break aktif" or "Auto Break dimatikan", 2)
         end,
@@ -10158,6 +10144,7 @@ safe(function()
         Desc = "Pecah block cepat otomatis tanpa rollback (server valid)",
         Value = State.FastBreak,
         Callback = function(on)
+            if fastBreakSync then return end
             setFastBreak(on)
             notify("Gembul", on and "Auto Break aktif" or "Auto Break dimatikan", 2)
         end,
