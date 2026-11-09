@@ -129,6 +129,7 @@ local State = {
     BreakMs = 220,                -- jeda tiap pukulan (normal 220)
     AfterBreakMs = 300,           -- jeda setelah block hancur
     HitsOverride = 0,             -- jumlah pukulan manual (0 = otomatis)
+    AutoConnect = true,           -- otomatis hubungkan world saat masuk / pindah world
     FastBreak = true,             -- pecah semua block dalam 1 hit (Fast Break)
     BreakBackground = true,       -- selalu ikut pecah background (tanpa tombol)
     MultiTarget = 1,              -- jumlah tile dipukul bergantian (1 = biasa)
@@ -2698,6 +2699,64 @@ end))
 ---------------------------------------------------------------------
 local stopFarm
 
+local ensureConnected
+do
+    local lastCheck = 0
+    ensureConnected = function()
+        if Refs.World and type(Refs.World.fg) == "table" and type(Refs.World.bg) == "table" and Refs.Punch and playerState() then
+            return true
+        end
+        if os.clock() - lastCheck < 0.8 then return Refs.World ~= nil end
+        lastCheck = os.clock()
+        if Anim and Anim.quickRefs then pcall(Anim.quickRefs) end
+        if not Refs.World or not Refs.Punch then pcall(findRefs) end
+        if Anim and Anim.findFast then pcall(Anim.findFast) end
+        if Refs.World and type(Refs.World.fg) == "table" then
+            pcall(watchInventory)
+            pcall(doInvRefresh, true)
+            pcall(findDropRefs, true)
+            if Auto and Auto.findTreeRefs then pcall(Auto.findTreeRefs) end
+            pcall(function() if UI.RefInfo then UI.RefInfo:SetDesc(refsText()) end end)
+            pcall(updateStatus)
+            return true
+        end
+        return Refs.World ~= nil
+    end
+end
+
+-- Background Auto-Connect runner: otomatis sambungkan saat player masuk / pindah world
+task.spawn(function()
+    local lastAutoWorld = nil
+    while task.wait(1.5) do
+        if alive() and State.AutoConnect then
+            if not Refs.World or not Refs.Punch or not playerState() then
+                local ok = ensureConnected()
+                if ok and Refs.World then
+                    local wName = rawget(Refs.World, "name") or "World"
+                    if lastAutoWorld ~= wName then
+                        lastAutoWorld = wName
+                        pcall(function()
+                            notify("Gembul", "Terhubung otomatis ke World: " .. tostring(wName), 3)
+                            if UI.RefInfo then UI.RefInfo:SetDesc(refsText()) end
+                            updateStatus()
+                        end)
+                    end
+                end
+            else
+                local curName = rawget(Refs.World, "name")
+                if curName and lastAutoWorld ~= curName then
+                    lastAutoWorld = curName
+                    pcall(function()
+                        notify("Gembul", "World aktif: " .. tostring(curName), 2)
+                        if UI.RefInfo then UI.RefInfo:SetDesc(refsText()) end
+                        updateStatus()
+                    end)
+                end
+            end
+        end
+    end
+end)
+
 local function waitMs(ms)
     task.wait(math.max(ms or 0, 10) / 1000)
     return State.Running and alive()
@@ -2705,6 +2764,7 @@ end
 
 local function validate()
     local doPlace = farmMode() ~= "Break saja"
+    if not Refs.World then ensureConnected() end
     if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
     if next(farmOffsets()) == nil then return "Pilih tile dulu di Grid Tile" end
     if not getPlayerTile() then return "Kamu belum masuk world" end
@@ -4543,6 +4603,7 @@ stopClear = function(reason)
 end
 
 local function checkAutoStart()
+    if not Refs.World or not Refs.Punch or not OrigIsDown then ensureConnected() end
     if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
     if not Refs.Punch then return "Fungsi pukul game belum ketemu. Tekan 'Hubungkan ke game'" end
     if not OrigIsDown then return "Kontrol gerak game (WorldMenu.isDown) tidak ketemu" end
@@ -8531,6 +8592,36 @@ end)
 
 Box.FarmCtl = box(FarmTab, "Kontrol", true)
 Box.FarmBlock = box(FarmTab, "Block", true)
+
+safe(function()
+    Box.FarmCtl:Button({
+        Title = "⚡ Hubungkan ke World (Connect)",
+        Desc = "Hubungkan data world & karakter sekarang",
+        Callback = function()
+            local ok = ensureConnected()
+            if ok then
+                local wName = Refs.World and rawget(Refs.World, "name") or "World"
+                notify("Gembul", "Berhasil terhubung ke World: " .. tostring(wName), 3)
+                if UI.RefInfo then UI.RefInfo:SetDesc(refsText()) end
+                updateStatus()
+            else
+                notify("Gembul", "Data world belum siap / kamu belum masuk world!", 4)
+            end
+        end,
+    })
+end)
+
+safe(function()
+    Box.FarmCtl:Toggle({
+        Title = "Auto Connect World",
+        Desc = "Otomatis hubungkan world saat masuk / pindah world",
+        Value = State.AutoConnect,
+        Callback = function(on)
+            State.AutoConnect = on
+            notify("Gembul", on and "Auto Connect aktif" or "Auto Connect dimatikan", 2)
+        end,
+    })
+end)
 Box.FarmSpeed = box(FarmTab, "Mode & Kecepatan", false)
 
 safe(function()
@@ -8591,6 +8682,36 @@ end)
 
 Box.ClearCtl = box(ClearTab, "Kontrol", true)
 Box.ClearSet = box(ClearTab, "Pengaturan", false)
+
+safe(function()
+    Box.ClearCtl:Button({
+        Title = "⚡ Hubungkan ke World (Connect)",
+        Desc = "Hubungkan data world & karakter sekarang",
+        Callback = function()
+            local ok = ensureConnected()
+            if ok then
+                local wName = Refs.World and rawget(Refs.World, "name") or "World"
+                notify("Gembul", "Berhasil terhubung ke World: " .. tostring(wName), 3)
+                if UI.RefInfo then UI.RefInfo:SetDesc(refsText()) end
+                updateStatus()
+            else
+                notify("Gembul", "Data world belum siap / kamu belum masuk world!", 4)
+            end
+        end,
+    })
+end)
+
+safe(function()
+    Box.ClearCtl:Toggle({
+        Title = "Auto Connect World",
+        Desc = "Otomatis hubungkan world saat masuk / pindah world",
+        Value = State.AutoConnect,
+        Callback = function(on)
+            State.AutoConnect = on
+            notify("Gembul", on and "Auto Connect aktif" or "Auto Connect dimatikan", 2)
+        end,
+    })
+end)
 
 safe(function()
     UI.ClearToggle = Box.ClearCtl:Toggle({
