@@ -629,6 +629,7 @@ local State = {
     Mode = "Place + Break",       -- "Place + Break" | "Break saja" | "Place saja"
     PlaceMs = 250,                -- jeda setelah tiap place
     BreakMs = 220,                -- jeda tiap pukulan (normal 220)
+    FastBreak = false,            -- Auto Break / Fast Break (default OFF)
     AfterBreakMs = 250,           -- jeda setelah block hancur
     HitsOverride = 0,             -- jumlah pukulan manual (0 = otomatis)
     BreakBackground = true,       -- selalu ikut pecah background (tanpa tombol)
@@ -2194,6 +2195,7 @@ function Anim.consider(v, trusted)
             Refs.SetTile = v
         elseif not Refs.Punch and isPunchFn(v) then
             Refs.Punch = v
+            pcall(initPunchHook)
         end
     end
 end
@@ -2504,6 +2506,94 @@ local function sendHitFx(x, y)
     end
 end
 
+---------------------------------------------------------------------
+-- AUTO BREAK / FAST BREAK GEMBUL (Server-Valid - Anti-Rollback)
+---------------------------------------------------------------------
+local BurstActive = {}
+local OrigPunchHook = nil
+
+local function setFastBreak(on)
+    State.FastBreak = (on == true)
+    if State.FastBreak then
+        State.BreakMs = 190
+        State.AfterBreakMs = 50
+    else
+        State.BreakMs = 220
+        State.AfterBreakMs = 250
+    end
+    if UI.FarmFastBreakToggle then
+        pcall(function() UI.FarmFastBreakToggle:Set(State.FastBreak) end)
+    end
+    if UI.SpeedFastBreakToggle then
+        pcall(function() UI.SpeedFastBreakToggle:Set(State.FastBreak) end)
+    end
+end
+
+local function startTileBurst(x, y)
+    if not State.FastBreak then return end
+    local key = x .. "," .. y
+    if BurstActive[key] then return end
+    local fg = tileAt("fg", x, y)
+    local layer, id
+    if fg and fg ~= 0 then
+        layer, id = "fg", fg
+    elseif State.BreakBackground then
+        local bg = tileAt("bg", x, y)
+        if bg and bg ~= 0 then
+            layer, id = "bg", bg
+        end
+    end
+    if not (layer and id and canBreak(id)) then return end
+    BurstActive[key] = true
+    task.spawn(function()
+        local need = hitsNeeded(id)
+        local punchFn = OrigPunchHook or Refs.Punch
+        for i = 2, need do
+            task.wait(0.185)
+            if not alive() or tileAt(layer, x, y) ~= id then break end
+            if punchFn then
+                pcall(punchFn, x, y, State.MutePunch or nil, nil)
+            end
+            sendHitFx(x, y)
+            if State.Visual and Anim.swing then Anim.swing(x, y, "punch") end
+            if tileAt(layer, x, y) ~= id then break end
+        end
+        BurstActive[key] = nil
+    end)
+end
+
+local function initPunchHook()
+    if hookfunction and Refs.Punch and not OrigPunchHook then
+        pcall(function()
+            OrigPunchHook = hookfunction(Refs.Punch, function(x, y, mute, extra)
+                local res = OrigPunchHook(x, y, mute, extra)
+                if State.FastBreak and type(x) == "number" and type(y) == "number" then
+                    task.delay(0.02, function()
+                        startTileBurst(x, y)
+                    end)
+                end
+                return res
+            end)
+        end)
+    end
+end
+
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if not State.FastBreak or processed then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local pos = input.Position
+    local v = getView()
+    if not v or not v.tiles or not v.ts or v.ts <= 0 then return end
+    local relX = pos.X - v.tiles.AbsolutePosition.X
+    local relY = pos.Y - v.tiles.AbsolutePosition.Y
+    if relX < 0 or relY < 0 or relX > v.tiles.AbsoluteSize.X or relY > v.tiles.AbsoluteSize.Y then return end
+    local tx = math.floor(relX / v.ts) + (State.CalibX or 0)
+    local ty = math.floor(relY / v.ts) + (State.CalibY or 0)
+    task.delay(0.04, function()
+        startTileBurst(tx, ty)
+    end)
+end))
+
 local function hitsNeeded(id)
     if State.HitsOverride > 0 then return State.HitsOverride end
     local it = ItemDB[id]
@@ -2604,6 +2694,23 @@ local function tryBreak(x, y, includeBg, onlyId)
             State.LastAction = "Break " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
             return "broke"
         end
+        if State.FastBreak then
+            local need = hitsNeeded(id)
+            for h = 2, need do
+                task.wait(0.185)
+                if not alive() or tileAt(layer, x, y) ~= id then break end
+                pcall(Refs.Punch, x, y, State.MutePunch or nil, nil)
+                sendHitFx(x, y)
+                if State.Visual then Anim.swing(x, y, "punch") end
+                if tileAt(layer, x, y) ~= id then break end
+            end
+            if tileAt(layer, x, y) ~= id then
+                Drops.brokeAt[key] = os.clock()
+                State.Broken += 1
+                State.LastAction = "Break " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
+                return "broke"
+            end
+        end
         State.LastAction = "Pukul " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
         return "hit"
     end
@@ -2618,6 +2725,14 @@ local function tryBreak(x, y, includeBg, onlyId)
     sendHitFx(x, y)
     if State.Visual then Anim.swing(x, y, "punch") end
     local need = hitsNeeded(id)
+    if State.FastBreak and hc.n < need then
+        while hc.n < need and alive() do
+            task.wait(0.185)
+            hc.n += 1
+            sendHitFx(x, y)
+            if State.Visual then Anim.swing(x, y, "punch") end
+        end
+    end
     if hc.n >= need then
         sendSetTile(layer, x, y, 0)
         HitCount[key] = nil
@@ -9555,6 +9670,18 @@ safe(function()
 end)
 
 safe(function()
+    UI.FarmFastBreakToggle = Box.FarmCtl:Toggle({
+        Title = "Auto Break / Fast Break",
+        Desc = "Pecah block cepat otomatis tanpa rollback (server valid)",
+        Value = State.FastBreak,
+        Callback = function(on)
+            setFastBreak(on)
+            notify("Gembul", on and "Auto Break aktif" or "Auto Break dimatikan", 2)
+        end,
+    })
+end)
+
+safe(function()
     Box.FarmCtl:Dropdown({
         Title = "Mode collect",
         Desc = "Berlaku untuk semua fitur. Sentuhan = seperti main manual. Remote = ambil dari jauh (cara lama, cepat)",
@@ -10024,6 +10151,18 @@ addNumber(SpeedTab, {
     Min = 140, Max = 1000, Step = 10, Default = State.PlaceMs,
     Callback = function(v) State.PlaceMs = math.floor(v) end,
 })
+
+safe(function()
+    UI.SpeedFastBreakToggle = SpeedTab:Toggle({
+        Title = "Auto Break / Fast Break",
+        Desc = "Pecah block cepat otomatis tanpa rollback (server valid)",
+        Value = State.FastBreak,
+        Callback = function(on)
+            setFastBreak(on)
+            notify("Gembul", on and "Auto Break aktif" or "Auto Break dimatikan", 2)
+        end,
+    })
+end)
 
 addNumber(SpeedTab, {
     Title = "Speed Break (ms)",
