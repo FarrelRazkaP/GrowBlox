@@ -1,5 +1,5 @@
 -- =====================================================================
--- GEMBUL ACT HOOK & AUTO FAST BREAK TEST
+-- GEMBUL ACT HOOK & AUTO FAST BREAK TEST (V2 - Strict Game Matching)
 -- =====================================================================
 
 local CoreGui = game:GetService("CoreGui")
@@ -17,7 +17,6 @@ local gc = getconstants or (debug and debug.getconstants)
 local gu = getupvalues or (debug and debug.getupvalues)
 local gi = getinfo or (debug and debug.getinfo)
 
--- Screen GUI created FIRST so user ALWAYS sees output
 local sg = Instance.new("ScreenGui")
 sg.Name = "GembulActHookGui"
 sg.ResetOnSpawn = false
@@ -54,7 +53,7 @@ box.ClearTextOnFocus = false
 box.TextEditable = false
 box.Font = Enum.Font.Code
 box.TextSize = 11
-box.Text = "Starting scan...\n"
+box.Text = "Scanning GC...\n"
 box.Parent = frame
 
 local close = Instance.new("TextButton")
@@ -72,22 +71,28 @@ local function updateUI()
     box.Text = table.concat(logLines, "\n")
 end
 
--- Find act function dynamically via signature constants
+-- Filter out own loadstring and ensure we find the 154-constant game function
 local actFn = nil
+local candidates = {}
+
 if type(getgc) == "function" and gc then
     for _, fn in pairs(getgc()) do
         if type(fn) == "function" then
-            local ok, c = pcall(gc, fn)
-            if ok and type(c) == "table" then
-                local hasPunchReady = false
-                local hasWrench = false
-                for _, v in pairs(c) do
-                    if v == "punchReady" or v == "pressPunch" then hasPunchReady = true end
-                    if v == "wrenchTile" or v == "reachesDoor" or v == "vendOwner" then hasWrench = true end
-                end
-                if hasPunchReady and hasWrench then
-                    actFn = fn
-                    break
+            local info = gi and gi(fn) or {}
+            local src = tostring(info.source or "")
+            if src ~= "=loadstring" and not src:find("TestActHook") then
+                local ok, c = pcall(gc, fn)
+                if ok and type(c) == "table" and #c >= 50 then
+                    local hasPunchReady, hasWrench, hasFrozen = false, false, false
+                    for _, v in pairs(c) do
+                        if v == "punchReady" or v == "pressPunch" then hasPunchReady = true end
+                        if v == "wrenchTile" or v == "reachesDoor" or v == "vendOwner" then hasWrench = true end
+                        if v == "Frozen" or v == "door_shut" then hasFrozen = true end
+                    end
+                    if hasPunchReady and hasWrench and hasFrozen then
+                        actFn = fn
+                        break
+                    end
                 end
             end
         end
@@ -95,24 +100,21 @@ if type(getgc) == "function" and gc then
 end
 
 if not actFn then
-    log("[-] ERROR: act function not found in GC!")
+    log("[-] ERROR: Game act() function not found (strict match)!")
     updateUI()
     return
 end
 
 local info = gi and gi(actFn) or {}
-log(string.format("[+] SUCCESS: act() function found! (source: %s, line: %s, params: %s)", 
+log(string.format("[+] SUCCESS: Real Game act() found!\n  Source: %s\n  Line: %s\n  Params: %s", 
     tostring(info.source or "unknown"), tostring(info.currentline or "?"), tostring(info.nparams or "?")))
 
--- Install hook on act
 local isBursting = false
-local hookOk = false
-
 if hookfunction then
     local origAct = nil
     origAct = hookfunction(actFn, function(...)
         local args = { ... }
-        local str = string.format("[PUNCH DETECTED!] Args: ")
+        local str = string.format("[PUNCH DETECTED!] Args (%d): ", #args)
         for i, a in ipairs(args) do
             str = str .. string.format("[%d]=%s (%s) ", i, tostring(a), type(a))
         end
@@ -121,10 +123,10 @@ if hookfunction then
         updateUI()
         if setclipboard then pcall(setclipboard, str) end
 
-        -- Execute original hit
+        -- Execute the player's original click
         local ret = origAct(...)
 
-        -- AUTO FAST BREAK BURST: Immediately send remaining hits!
+        -- AUTO FAST BREAK BURST: Send remaining hits to break the block!
         if not isBursting and #args >= 1 then
             isBursting = true
             task.spawn(function()
@@ -138,15 +140,12 @@ if hookfunction then
 
         return ret
     end)
-    hookOk = true
-    log("[+] HOOK BERHASIL DIPASANG PADA act()!")
-    log("[+] Silakan pukul 1 block Tanah/Dirt sekarang!")
-    log("[+] Auto-burst 4x hit akan otomatis menyusul!")
+    log("[+] HOOK RESMI GAME BERHASIL AKTIF!")
+    log("[+] Silakan PUKUL 1 BLOCK TANAH (Dirt) sekarang!")
+    log("[+] Hook akan otomatis memberondong pukulan sampai pecah!")
 else
     log("[-] Executor tidak mendukung hookfunction!")
 end
 
-log("=========================================")
-log("Scan Complete! Output ready.")
 log("=========================================")
 updateUI()
